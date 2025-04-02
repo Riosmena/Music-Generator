@@ -1,129 +1,166 @@
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
+import os
 import numpy as np
 import librosa
 import librosa.display
-import matplotlib.pyplot as plt
-import os
-import glob
 import soundfile as sf
+import matplotlib.pyplot as plt
+import tensorflow as tf
+from tensorflow.keras import layers, Model, Input
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder
 
-class VAE(keras.Model):
-    def __init__(self, encoder, decoder, **kwargs):
-        super(VAE, self).__init__(**kwargs)
+# =====================
+# CONFIGURACIÓN
+# =====================
+DATA_PATH = "data"  # Carpeta con subcarpetas por género
+SAMPLE_RATE = 22050
+DURATION = 10
+SAMPLES_PER_TRACK = SAMPLE_RATE * DURATION
+N_MELS = 128
+LATENT_DIM = 128
+BATCH_SIZE = 32
+EPOCHS = 10
+
+# =====================
+# PREPROCESAMIENTO
+# =====================
+def get_genre_encodings(genres):
+    le = LabelEncoder()
+    int_labels = le.fit_transform(genres)
+    ohe = OneHotEncoder(sparse_output=False)
+    onehots = ohe.fit_transform(int_labels.reshape(-1, 1))
+    return le, {genre: onehots[i] for i, genre in enumerate(genres)}
+
+def preprocess_audio(data_path):
+    genres = sorted([d for d in os.listdir(data_path) if os.path.isdir(os.path.join(data_path, d))])
+    label_encoder, genre_dict = get_genre_encodings(genres)
+    X, y = [], []
+
+    for genre in genres:
+        genre_path = os.path.join(data_path, genre)
+        print(f"Procesando género: {genre}")
+        for file in os.listdir(genre_path):
+            if file.endswith(".wav"):
+                try:
+                    filepath = os.path.join(genre_path, file)
+                    signal, sr = librosa.load(filepath, sr=SAMPLE_RATE)
+                    if len(signal) >= SAMPLES_PER_TRACK:
+                        signal = signal[:SAMPLES_PER_TRACK]
+                        mel = librosa.feature.melspectrogram(y=signal, sr=sr, n_mels=N_MELS)
+                        mel_db = librosa.power_to_db(mel, ref=np.max)
+                        mel_db = mel_db / 80.0 + 1.0  # Normaliza a [0,1]
+                        X.append(mel_db)
+                        y.append(genre_dict[genre])
+                except Exception as e:
+                    print(f"Error con {file}: {e}")
+    X = np.array(X)[..., np.newaxis]
+    y = np.array(y)
+    return X, y, label_encoder
+
+# =====================
+# MODELO VAE CONDICIONADO
+# =====================
+class Sampling(layers.Layer):
+    def call(self, inputs):
+        z_mean, z_log_var = inputs
+        epsilon = tf.random.normal(shape=tf.shape(z_mean))
+        return z_mean + tf.exp(0.5 * z_log_var) * epsilon
+
+def build_encoder(input_shape, genre_dim):
+    x_in = Input(shape=input_shape)
+    g_in = Input(shape=(genre_dim,))
+    
+    x = layers.Conv2D(32, 3, strides=2, padding="same", activation="relu")(x_in)
+    x = layers.Conv2D(64, 3, strides=2, padding="same", activation="relu")(x)
+    x = layers.Flatten()(x)
+    g = layers.Dense(x.shape[1], activation="relu")(g_in)
+    x = layers.Concatenate()([x, g])
+    x = layers.Dense(256, activation="relu")(x)
+
+    z_mean = layers.Dense(LATENT_DIM)(x)
+    z_log_var = layers.Dense(LATENT_DIM)(x)
+    z = Sampling()([z_mean, z_log_var])
+    
+    return Model([x_in, g_in], [z_mean, z_log_var, z])
+
+def build_decoder(output_shape, genre_dim):
+    z_in = Input(shape=(LATENT_DIM,))
+    g_in = Input(shape=(genre_dim,))
+    x = layers.Concatenate()([z_in, g_in])
+
+    x = layers.Dense(128 * 431, activation="relu")(x)
+    x = layers.Reshape((128, 431, 1))(x)
+
+    # Puedes agregar más conv layers si quieres postprocesar un poco
+    x = layers.Conv2D(16, 3, padding="same", activation="relu")(x)
+    x = layers.Conv2D(1, 3, padding="same", activation="sigmoid")(x)
+
+    return Model([z_in, g_in], x)
+
+class VAE(Model):
+    def __init__(self, encoder, decoder):
+        super().__init__()
         self.encoder = encoder
         self.decoder = decoder
-    
-    def call(self, inputs):
-        input_data, labels = inputs
-        z_mean, z_log_var, z = self.encoder([input_data, labels])
-        reconstruction = self.decoder([z, labels])
-        return reconstruction
 
-def generate_audio(genre):
-    genre_encoded = onehot_encoder.transform([[label_encoder.transform([genre])[0]]])
-    random_latent = np.random.normal(size=(1, latent_dim))
-    generated_spec = vae.decoder.predict([random_latent, genre_encoded])[0, :, :, 0]
-    
-    # Normalizar la salida entre 0 y 1
-    generated_spec = np.clip(generated_spec, 0, 1)
+    def compile(self, optimizer):
+        super().compile()
+        self.optimizer = optimizer
+        self.loss_tracker = tf.keras.metrics.Mean(name="loss")
 
-    # Convertir a dB (evitando valores negativos extremos)
-    generated_spec = librosa.power_to_db(generated_spec, ref=np.max)
+    def train_step(self, data):
+        (x, g) = data[0]
+        with tf.GradientTape() as tape:
+            z_mean, z_log_var, z = self.encoder([x, g])
+            reconstruction = self.decoder([z, g])
+            recon_loss = tf.reduce_mean(tf.square(x - reconstruction))
+            kl_loss = -0.5 * tf.reduce_mean(1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
+            loss = recon_loss + kl_loss
+        grads = tape.gradient(loss, self.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+        self.loss_tracker.update_state(loss)
+        return {"loss": self.loss_tracker.result()}
 
-    return generated_spec
+# =====================
+# CONVERSIÓN A AUDIO
+# =====================
+def spectrogram_to_audio(mel, output_file="output.wav"):
+    mel_db = (mel - 1.0) * 80.0
+    mel_power = librosa.db_to_power(mel_db)
+    stft = librosa.feature.inverse.mel_to_stft(mel_power, sr=SAMPLE_RATE)
+    audio = librosa.griffinlim(stft)
+    sf.write(output_file, audio, SAMPLE_RATE)
+    print(f"Audio generado guardado en: {output_file}")
 
+# =====================
+# MAIN
+# =====================
+if __name__ == "__main__":
+    print("Cargando y preprocesando datos...")
+    X, y, label_encoder = preprocess_audio(DATA_PATH)
 
-def spectrogram_to_audio(mel_spec, sr=22050):
-    mel_spec = np.maximum(mel_spec, -80)  # Evita valores extremos en dB
-    mel_spec = librosa.db_to_power(mel_spec)  # Convierte a escala de potencia
-    audio = librosa.feature.inverse.mel_to_audio(mel_spec, sr=sr)
-    return audio
+    input_shape = X.shape[1:]
+    genre_dim = y.shape[1]
 
+    encoder = build_encoder(input_shape, genre_dim)
+    decoder = build_decoder(input_shape, genre_dim)
 
-def load_audio(file_path, sr=22050, n_mels=128):
-    """
-    Load an audio file and return the audio time series and sample rate.
-    """
-    y, sr = librosa.load(file_path, sr=sr)
-    mel_spec = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=n_mels)
-    mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
-    return mel_spec
+    vae = VAE(encoder, decoder)
+    vae.compile(optimizer=tf.keras.optimizers.Adam())
+    vae.fit([X, y], epochs=EPOCHS, batch_size=BATCH_SIZE)
 
-def sampling(args):
-    """
-    Reparameterization trick by sampling from an isotropic unit Gaussian.
-    """
-    z_mean, z_log_var = args
-    batch = tf.shape(z_mean)[0]
-    dim = tf.shape(z_mean)[1]
-    epsilon = tf.keras.backend.random_normal(shape=(batch, dim))
-    return z_mean + tf.exp(0.5 * z_log_var) * epsilon
+    # Elegir un género para generar audio
+    genre_name = label_encoder.classes_[0]  # Cambia por "metal", "jazz", etc.
+    genre_index = list(label_encoder.classes_).index(genre_name)
+    genre_onehot = np.zeros((1, genre_dim))
+    genre_onehot[0, genre_index] = 1
 
-data_dir = "data"
-labels = []
-audio_files = []
+    z_random = tf.random.normal(shape=(1, LATENT_DIM))
+    generated = decoder([z_random, genre_onehot]).numpy()
+    spectrogram = np.squeeze(generated)
 
-for genre in os.listdir(data_dir):
-    genre_dir = os.path.join(data_dir, genre)
-    if os.path.isdir(genre_dir):
-        for file in glob.glob(os.path.join(genre_dir, "*.wav")):
-            mel_spec = load_audio(file)
-            if mel_spec.shape[1] >= 100:
-                mel_spec = mel_spec[:, :100]
-                audio_files.append(mel_spec)
-                labels.append(genre)
+    plt.imshow(spectrogram, origin='lower', aspect='auto', cmap='magma')
+    plt.title(f"Género generado: {genre_name}")
+    plt.colorbar()
+    plt.show()
 
-label_encoder = LabelEncoder()
-integer_encoded = label_encoder.fit_transform(labels)
-onehot_encoder = OneHotEncoder(sparse=False)
-labels_onehot = onehot_encoder.fit_transform(integer_encoded.reshape(-1, 1))
-
-x_train = np.array(audio_files).reshape(-1, 128, 100, 1)
-y_train = np.array(labels_onehot)
-
-latent_dim = 16
-num_classes = len(label_encoder.classes_)
-
-input_shape = (128, 100, 1)
-inputs = keras.Input(shape=input_shape)
-x = layers.Conv2D(32, (3, 3), activation='relu', strides=2, padding='same')(inputs)
-x = layers.Conv2D(64, (3, 3), activation='relu', strides=2, padding='same')(x)
-x = layers.Flatten()(x)
-x = layers.Dense(128, activation='relu')(x)
-
-labels_input = keras.Input(shape=(num_classes,))
-x = layers.Concatenate()([x, labels_input])
-
-z_mean = layers.Dense(latent_dim)(x)
-z_log_var = layers.Dense(latent_dim)(x)
-
-z = layers.Lambda(sampling)([z_mean, z_log_var])
-
-encoder = keras.Model([inputs, labels_input], [z_mean, z_log_var, z], name="encoder")
-
-decoder_inputs = keras.Input(shape=(latent_dim,))
-decoder_lables = keras.Input(shape=(num_classes,))
-x = layers.Concatenate()([decoder_inputs, decoder_lables])
-x = layers.Dense(128, activation='relu')(x)
-x = layers.Dense(32 * 25 * 64, activation='relu')(x)
-x = layers.Reshape((32, 25, 64))(x)
-x = layers.Conv2DTranspose(64, (3, 3), activation='relu', strides=(2, 2), padding='same')(x)
-x = layers.Conv2DTranspose(32, (3, 3), activation='relu', strides=(2, 2), padding='same')(x)
-outputs = layers.Conv2DTranspose(1, (3, 3), activation='sigmoid', padding='same')(x)
-
-decoder = keras.Model([decoder_inputs, decoder_lables], outputs, name="decoder")
-
-vae = VAE(encoder, decoder)
-vae.compile(optimizer=keras.optimizers.Adam(), loss='mse')
-
-vae.fit([x_train, y_train], x_train, epochs=10, batch_size=16)
-
-genre = "rock"
-generated_spec = generate_audio(genre)
-print(np.isnan(generated_spec).any(), np.isinf(generated_spec).any())
-audio = spectrogram_to_audio(generated_spec)
-
-sf.write(f"generated_{genre}.wav", audio, 22050)
+    spectrogram_to_audio(spectrogram, f"{genre_name}_generado.wav")
