@@ -1,60 +1,58 @@
 import os
 import librosa
-import numpy as np
-import matplotlib.pyplot as plt
-import soundfile as sf
+import torch
+import torchaudio
+from torchvision.transforms import Resize
+from tqdm import tqdm
 
-DATASET_DIR = "data"
-OUTPUT_DIR = "processed"
-SAMPLE_RATE = 16000
-DURATION = 30
+DATASET = "data"
+PROCESSED_DATA_DIR = "processed"
+SR = 22050
+DURATION = 10
+SAMPLES_PER_TRACK = SR * DURATION
+N_MELS = 64
 
-def ensure_dir_exists(directory):
-    if not os.path.exists(directory):
-        os.makedirs(directory)
+os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
 
-def preprocess_audio_file(file_path):
-    y, sr = librosa.load(file_path, sr=SAMPLE_RATE, mono=True, duration=DURATION)
-    return y
+def process_audio(file_path):
+    signal, sr = torchaudio.load(file_path)
+    signal = torch.mean(signal, dim=0, keepdim=True)
 
-def save_spectrogram(audio, sr, output_path, target_length=940):
-    S = librosa.feature.melspectrogram(y=audio, sr=sr, n_mels=128)
-    S_DB = librosa.power_to_db(S, ref=np.max)
+    if signal.shape[1] > SAMPLES_PER_TRACK:
+        signal = signal[:, :SAMPLES_PER_TRACK]
 
-    S_DB = (S_DB + 80.0) / 80.0
-    S_DB = np.clip(S_DB, 0, 1)
-    
-    if S_DB.shape[1] < target_length:
-        path_width = target_length - S_DB.shape[1]
-        S_DB = np.pad(S_DB, ((0, 0), (0, path_width)), mode='constant')
+    else:
+        pad = SAMPLES_PER_TRACK - signal.shape[1]
+        signal = torch.nn.functional.pad(signal, (0, pad), "constant")
 
-    elif S_DB.shape[1] > target_length:
-        S_DB = S_DB[:, :target_length]
+    mel_spec = torchaudio.transforms.MelSpectrogram(
+        sample_rate=sr,
+        n_mels=N_MELS,
+    )(signal)
 
-    np.save(output_path, S_DB)
+    mel_spec = torchaudio.transforms.AmplitudeToDB()(mel_spec)
+    return mel_spec.squeeze(0)
 
 def process_dataset():
-    ensure_dir_exists(OUTPUT_DIR)
-    genres = os.listdir(DATASET_DIR)
-
-    for genre in genres:
-        genre_path = os.path.join(DATASET_DIR, genre)
+    for genre in os.listdir(DATASET):
+        genre_path = os.path.join(DATASET, genre)
         if not os.path.isdir(genre_path):
             continue
-        
-        genre_output_path = os.path.join(OUTPUT_DIR, genre)
-        ensure_dir_exists(genre_output_path)
 
-        for i, file in enumerate(os.listdir(genre_path)):
-            if not file.endswith(".wav") and not file.endswith(".mp3"):
+        genre_out = os.path.join(PROCESSED_DATA_DIR, genre)
+        os.makedirs(genre_out, exist_ok=True)
+
+        for file in tqdm(os.listdir(genre_path), desc=f"Processing {genre}"):
+            if not file.endswith(".wav"):
                 continue
 
             file_path = os.path.join(genre_path, file)
             try:
-                audio = preprocess_audio_file(file_path)
-                output_path = os.path.join(genre_output_path, f"{genre}_{i}.npy")
-                save_spectrogram(audio, SAMPLE_RATE, output_path)
+                mel = process_audio(file_path)
+                out_path = os.path.join(genre_out, file.replace(".wav", ".pt"))
+                torch.save(mel, out_path)
             except:
                 print(f"Error processing {file_path}")
+                continue
 
 process_dataset()

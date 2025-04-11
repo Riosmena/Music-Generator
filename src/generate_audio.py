@@ -1,44 +1,53 @@
 import torch
-import numpy as np
-import librosa
-import soundfile as sf
+import torchaudio
 import matplotlib.pyplot as plt
-from train_model import VAE
+from model_GAN import Generator, DEVICE, NOISE_DIM, MusicDataset
 
-SR = 16000
-N_MELS = 128
-LATENT_DIM = 32
-LENGTH = 940
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+MODEL_PATH = "generator.pth"
+DATASET_PATH = "processed"
+OUTPUT_SPEC_PATH = "generated_spectrogram.pt"
+OUTPUT_AUDIO = "generated_audio.wav"
+SR = 22050
+N_MELS = 64
 
-model = VAE((1, N_MELS, LENGTH), LATENT_DIM).to(DEVICE)
-model.load_state_dict(torch.load("vae_model.pth"))
-model.eval()
+dataset = MusicDataset(DATASET_PATH)
+genre_dim = len(dataset.genres)
+_, _genre = dataset[0]
+input_shape = _.shape
 
-z = torch.randn(1, LATENT_DIM).to(DEVICE)
+generator = Generator(NOISE_DIM, genre_dim, input_shape).to(DEVICE)
+generator.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+generator.eval()
 
+genre_names = dataset.genres
+print("Availables Genres:", genre_names)
+genre_idx = int(input(f"Select a genre index (0-{len(genre_names) - 1}): "))
+genre_onehot = torch.zeros(1, genre_dim).to(DEVICE)
+genre_onehot[0, genre_idx] = 1.0
+
+noise = torch.randn(1, NOISE_DIM).to(DEVICE)
 with torch.no_grad():
-    generated = model.decode(z).cpu().squeeze().numpy()
+    generated = generator(noise, genre_onehot)
 
-generated = np.clip(generated, 0, 1)
-mel_db = generated * 80.0 - 80.0
+generated = (generated + 1) / 2
+generated = generated.cpu().squeeze(0)
+torch.save(generated, OUTPUT_SPEC_PATH)
+print(f"Spectrogram saved to {OUTPUT_SPEC_PATH}")
 
-mel_power = librosa.db_to_power(mel_db)
+mel_spec_db = generated * 80.0 - 80.0
+mel_spec_amp = torch.pow(10.0, mel_spec_db / 20.0)
 
-audio = librosa.feature.inverse.mel_to_audio(
-    mel_power, 
-    sr=SR, 
-    n_fft=2048, 
-    hop_length=512, 
-    win_length=2048, 
-    n_iter=32,
-    power=2.0
-)
+griffin_lim = torchaudio.transforms.GriffinLim(n_fft=1024)
+audio = griffin_lim(mel_spec_amp)
 
-sf.write("generated.wav", audio, SR)
+torchaudio.save(OUTPUT_AUDIO, audio.unsqueeze(0), SR)
+print(f"Audio saved to {OUTPUT_AUDIO}")
+
 plt.figure(figsize=(10, 4))
-librosa.display.specshow(mel_db, sr=SR, x_axis='time', y_axis='mel')
-plt.colorbar(format='%+2.0f dB')
-plt.title('Generated Mel Spectrogram')
+plt.imshow(generated, aspect='auto', origin='lower', cmap='magma')
+plt.title(f"Generated Spectrogram - Genre: {genre_names[genre_idx]}")
+plt.xlabel("Time")
+plt.ylabel("Frequency")
+plt.colorbar()
 plt.tight_layout()
 plt.show()
