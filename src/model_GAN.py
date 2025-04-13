@@ -9,65 +9,65 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class MusicDataset(Dataset):
     def __init__(self, data_dir):
-        self.samples = []
-        self.genres = sorted(os.listdir(data_dir))
-        self.genre_to_idx = {g: i for i, g in enumerate(self.genres)}
-
-        for genre in self.genres:
-            genre_dir = os.path.join(data_dir, genre)
-            for file in glob(f"{genre_dir}/*.pt"):
-                self.samples.append((file, self.genre_to_idx[genre]))
+        self.genre = "metal"
+        self.samples = glob(os.path.join(data_dir, self.genre, "*.pt"))
     
     def __len__(self):
         return len(self.samples)
     
     def __getitem__(self, idx):
-        file_path, genre_idx = self.samples[idx]
-        spectrogram = torch.load(file_path)
-        spectrogram = spectrogram.unsqueeze(0)
-        spectrogram = (spectrogram - spectrogram.min()) / (spectrogram.max() - spectrogram.min() + 1e-6)
-        spectrogram = spectrogram * 2 - 1
-        genre_onehot = torch.zeros(len(self.genres))
-        genre_onehot[genre_idx] = 1.0
-        return spectrogram, genre_onehot
+        spec= torch.load(self.samples[idx])
+        spec = (spec - spec.min()) / (spec.max() - spec.min() + 1e-6)
+        spec = spec * 2 - 1
+
+        if spec.ndim == 2:
+            return spec.unsqueeze(0)
+        elif spec.ndim == 3 and spec.shape[0] == 1:
+            return spec
     
 class Generator(nn.Module):
-    def __init__(self, noise_dim, genre_dim, output_shape):
+    def __init__(self):
         super().__init__()
-        self.input_dim = noise_dim + genre_dim
-        self.output_shape = output_shape
-
         self.net = nn.Sequential(
-            nn.Linear(self.input_dim, 512),
+            nn.ConvTranspose2d(100, 512, kernel_size=(4, 4), stride=(1, 1), padding=0),
+            nn.BatchNorm2d(512),
             nn.ReLU(True),
-            nn.Linear(512, 2048),
-            nn.BatchNorm1d(2048),
+
+            nn.ConvTranspose2d(512, 256, kernel_size=(4, 4), stride=(2, 2), padding=1),
+            nn.BatchNorm2d(256),
             nn.ReLU(True),
-            nn.Linear(2048, output_shape[1] * output_shape[2]),
+
+            nn.ConvTranspose2d(256, 128, kernel_size=(4, 4), stride=(2, 2), padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(True),
+
+            nn.ConvTranspose2d(128, 1, kernel_size=(4, 4), stride=(2, 2), padding=1),
             nn.Tanh(),
         )
 
-    def forward(self, noise, genre):
-        x = torch.cat([noise, genre], dim=1)
-        x = self.net(x)
-        return x.view(-1, *self.output_shape)
+    def forward(self, z):
+        return self.net(z)
 
 class Discriminator(nn.Module):
-    def __init__(self, genre_dim, input_shape):
+    def __init__(self):
         super().__init__()
-        self.input_dim = input_shape[1] * input_shape[2] + genre_dim
-
         self.net = nn.Sequential(
-            nn.Linear(self.input_dim, 512),
-            nn.LeakyReLU(0.2),
-            nn.Linear(512, 256),
-            nn.LeakyReLU(0.2),
-            nn.Linear(256, 1),
-            nn.Sigmoid(),
+            nn.Conv2d(1, 64, kernel_size=(4, 4), stride=(2, 2), padding=1),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(64, 128, kernel_size=(4, 4), stride=(2, 2), padding=1),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(128, 256, kernel_size=(4, 4), stride=(2, 2), padding=1),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(256, 1, kernel_size=(4, 4), stride=(1, 1), padding=0),
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
         )
     
-    def forward(self, spectrogram, genre):
-        x = spectrogram.view(spectrogram.size(0), -1)
-        x = torch.cat([x, genre], dim=1)
-        x = self.net(x)
-        return x
+    def forward(self, x):
+        return self.net(x)
+    

@@ -3,51 +3,57 @@ import torchaudio
 import matplotlib.pyplot as plt
 from model_GAN import Generator, DEVICE, NOISE_DIM, MusicDataset
 
-MODEL_PATH = "generator.pth"
-DATASET_PATH = "processed"
-OUTPUT_SPEC_PATH = "generated_spectrogram.pt"
-OUTPUT_AUDIO = "generated_audio.wav"
 SR = 22050
 N_MELS = 64
+N_FFT = 1024
+HOP_LENGTH = 512
+DATASET_PATH = "processed"
+MODEL_PATH = "generator.pth"
+OUTPUT_WAV_PATH = "metal_generated.wav"
 
 dataset = MusicDataset(DATASET_PATH)
-genre_dim = len(dataset.genres)
-_, _genre = dataset[0]
-input_shape = _.shape
+input_shape = dataset[0].shape
 
-generator = Generator(NOISE_DIM, genre_dim, input_shape).to(DEVICE)
-generator.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
-generator.eval()
-
-genre_names = dataset.genres
-print("Availables Genres:", genre_names)
-genre_idx = int(input(f"Select a genre index (0-{len(genre_names) - 1}): "))
-genre_onehot = torch.zeros(1, genre_dim).to(DEVICE)
-genre_onehot[0, genre_idx] = 1.0
+G = Generator(NOISE_DIM, input_shape).to(DEVICE)
+G.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+G.eval()
 
 noise = torch.randn(1, NOISE_DIM).to(DEVICE)
 with torch.no_grad():
-    generated = generator(noise, genre_onehot)
+    generated = G(noise)
 
 generated = (generated + 1) / 2
-generated = generated.cpu().squeeze(0)
-torch.save(generated, OUTPUT_SPEC_PATH)
-print(f"Spectrogram saved to {OUTPUT_SPEC_PATH}")
 
-mel_spec_db = generated * 80.0 - 80.0
+mel_spec_db = generated.squeeze(0).cpu() * 80.0 - 80.0
+
 mel_spec_amp = torch.pow(10.0, mel_spec_db / 20.0)
 
-griffin_lim = torchaudio.transforms.GriffinLim(n_fft=1024)
-audio = griffin_lim(mel_spec_amp)
+mel_scale = torchaudio.transforms.MelScale(
+    n_mels=N_MELS,
+    sample_rate=SR,
+    n_stft=N_FFT // 2 + 1,
+    f_min=0.0,
+    f_max=8000.0,
+    norm="slaney"
+)
 
-torchaudio.save(OUTPUT_AUDIO, audio.unsqueeze(0), SR)
-print(f"Audio saved to {OUTPUT_AUDIO}")
+mel_basis = mel_scale.fb
+inv_mel_basis = torch.linalg.pinv(mel_basis.T)
 
-plt.figure(figsize=(10, 4))
-plt.imshow(generated, aspect='auto', origin='lower', cmap='magma')
-plt.title(f"Generated Spectrogram - Genre: {genre_names[genre_idx]}")
+mel_spec_amp = mel_spec_amp.float()
+linear_spec = torch.matmul(inv_mel_basis, mel_spec_amp)
+linear_spec = torch.clamp(linear_spec, min=1e-5, max=1e3)
+linear_spec = linear_spec / (linear_spec.max() + 1e-6)
+
+griffin = torchaudio.transforms.GriffinLim(n_fft=N_FFT, hop_length=HOP_LENGTH)
+audio = griffin(linear_spec)
+audio = torch.nan_to_num(audio, nan=0.0)
+
+torchaudio.save("metal_generated.wav", audio.unsqueeze(0) if audio.ndim == 1 else audio, SR)
+print(f"Audio saved to 'metal_generated.wav'")
+
+plt.imshow(generated.squeeze().cpu(), aspect='auto', origin='lower', cmap='magma')
+plt.title(f"Generated Spectrogram - Metal")
 plt.xlabel("Time")
 plt.ylabel("Frequency")
-plt.colorbar()
-plt.tight_layout()
 plt.show()
