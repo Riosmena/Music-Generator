@@ -1,6 +1,8 @@
 import os
 import torch
 import torchaudio
+import random
+import librosa
 from tqdm import tqdm
 
 GENRE = "metal"
@@ -17,6 +19,10 @@ def process_audio(file_path):
     signal, sr = torchaudio.load(file_path)
     signal = torch.mean(signal, dim=0, keepdim=True)
 
+    if random.random() < 0.5:
+        steps = random.uniform(-2, 2)
+        signal = torchaudio.functional.pitch_shift(signal, sr, steps)
+
     total_samples = signal.shape[1]
     chunks = total_samples // SAMPLES
     processed = []
@@ -31,6 +37,12 @@ def process_audio(file_path):
             n_mels=N_MELS
         )(chunk)
         mel_db = torchaudio.transforms.AmplitudeToDB()(mel)
+
+        if random.random() < 0.5:
+            mel_db = torchaudio.transforms.FrequencyMasking(freq_mask_param=15)(mel_db)
+        if random.random() < 0.5:
+            mel_db = torchaudio.transforms.TimeMasking(time_mask_param=25)(mel_db)
+
         processed.append(mel_db)
     
     return processed
