@@ -10,7 +10,7 @@ INPUT_DIR = os.path.join("data", GENRE)
 OUTPUT_DIR = os.path.join("processed", GENRE)
 SR = 22050
 CHUNK_DURATION = 6
-N_MELS = 64
+N_MELS = 128
 SAMPLES = SR *CHUNK_DURATION
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
