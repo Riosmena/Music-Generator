@@ -52,7 +52,7 @@ class Generator(nn.Module):
             nn.InstanceNorm2d(64, affine=True), nn.ReLU(True),
 
             nn.ConvTranspose2d(64, 1, 4, 2, 1, bias=False),
-            nn.Tanh()
+            nn.Sigmoid()
         )
 
     def forward(self, z):

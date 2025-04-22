@@ -15,7 +15,7 @@ OUTPUT_DIR = "logs"
 SAMPLES_DIR = "samples"
 EPOCHS = 200
 BATCH_SIZE = 8
-SAVE_EVERY = 10
+SAVE_EVERY = 5
 LR = 2e-4
 BETA1, BETA2 = 0.5, 0.999
 LAMBDA_GP = 5
@@ -31,26 +31,35 @@ def save_checkpoint(model, epoch):
         mel_tensor = model(noise).cpu().squeeze(0)
 
     mel_db = mel_tensor * 80.0 - 80.0
-    mel_amp = torchaudio.functional.DB_to_amplitude(mel_db, ref=1.0, power=0.5)
-    mel_scale = torchaudio.transforms.MelScale(
-        n_mels=N_MELS,
-        sample_rate=22050,
-        n_stft=1024 // 2 + 1,
-    )
-    mel_basis = mel_scale.fb
-    inv_mel = torch.linalg.pinv(mel_basis.T)
+    mel_amp = torchaudio.functional.DB_to_amplitude(mel_db, ref=1.0, power=2.0)
+    mel_amp = torch.clamp(mel_amp, min=1e-5)
 
-    spec_lin = torch.matmul(inv_mel, mel_amp)
+    mel_scale = torchaudio.transforms.MelScale(
+            n_stft=513,
+            n_mels=N_MELS,
+            sample_rate=22050,
+        )
+
+    mel_basis = mel_scale.fb
+    pseudo_inv = torch.linalg.pinv(mel_basis.T)
+    spec_lin = torch.matmul(pseudo_inv, mel_amp)
+
+    spec_lin = torch.clamp(spec_lin, min=0.0)
+    spec_lin = spec_lin / (spec_lin.max() + 1e-8)
+
     griffin = torchaudio.transforms.GriffinLim(
         n_fft=1024,
         hop_length=512,
         n_iter=100
     )
-    audio = griffin(spec_lin)
+    audio = griffin(spec_lin.unsqueeze(0))
     audio = torch.nan_to_num(audio, nan=0.0)
 
+    audio = audio * 5.0
+    audio = torch.clamp(audio, -1.0, 1.0)
+
     wav_path = os.path.join(SAMPLES_DIR, f"sample_epoch_{epoch}.wav")
-    torchaudio.save(wav_path, audio, 22050)
+    torchaudio.save(wav_path, audio.squeeze(0), 22050)
 
     plt.figure(figsize=(10, 4))
     plt.imshow(mel_tensor.squeeze(0), aspect='auto', origin='lower', cmap='magma')
