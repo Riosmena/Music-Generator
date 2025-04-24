@@ -11,15 +11,16 @@ from model_GAN import MusicDataset, Generator, Discriminator, NOISE_DIM, DEVICE,
 
 # Paths & hyperparams
 DATASET_PATH = "processed"
-OUTPUT_DIR = "logs"
+OUTPUT_DIR = "models"
 SAMPLES_DIR = "samples"
-EPOCHS = 200
+EPOCHS = 300
 BATCH_SIZE = 8
 SAVE_EVERY = 5
-LR = 2e-4
+LRG = 2e-4
+LRD = 1e-4
 BETA1, BETA2 = 0.5, 0.999
 LAMBDA_GP = 5
-CRITIC_ITER = 2
+MARGIN = 0.3
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(SAMPLES_DIR, exist_ok=True)
@@ -92,27 +93,39 @@ def train():
     G = Generator().to(DEVICE)
     D = Discriminator().to(DEVICE)
 
-    opt_g = optim.Adam(G.parameters(), lr=LR, betas=(BETA1, BETA2))
-    opt_d = optim.Adam(D.parameters(), lr=LR, betas=(BETA1, BETA2))
+    opt_g = optim.Adam(G.parameters(), lr=LRG, betas=(BETA1, BETA2))
+    opt_d = optim.Adam(D.parameters(), lr=LRD, betas=(BETA1, BETA2))
     sched_g = StepLR(opt_g, step_size=50, gamma=0.5)
     sched_d = StepLR(opt_d, step_size=50, gamma=0.5)
+
+    losses_d = []
+    losses_g = []
 
     for epoch in range(1, EPOCHS+1):
         for real in dataloader:
             real = real.to(DEVICE)
             b_size = real.size(0)
 
-            for _ in range(CRITIC_ITER):
-                noise = torch.randn(b_size, NOISE_DIM, device=DEVICE)
-                fake = G(noise)
-                d_real = D(real).mean()
-                d_fake = D(fake.detach()).mean()
-                gp = gradient_penalty(D, real, fake, DEVICE)
-                loss_d = d_fake - d_real + LAMBDA_GP * gp
+            noise = torch.randn(b_size, NOISE_DIM, device=DEVICE)
+            fake = G(noise)
+            d_real = D(real).mean()
+            d_fake = D(fake.detach()).mean()
+            gp = gradient_penalty(D, real, fake, DEVICE)
+            loss_d = d_fake - d_real + LAMBDA_GP * gp
 
+            advantage = (d_real - d_fake).item()
+
+            if advantage < MARGIN:
                 D.zero_grad()
                 loss_d.backward()
                 opt_d.step()
+
+                for param_group in opt_d.param_groups:
+                    if param_group['lr'] < LRD:
+                        param_group['lr'] = LRD
+            else:
+                for param_group in opt_d.param_groups:
+                    param_group['lr'] = LRD * 0.25
 
             noise = torch.randn(b_size, NOISE_DIM, device=DEVICE)
             fake = G(noise)
@@ -123,15 +136,32 @@ def train():
 
             G.zero_grad()
             loss_g.backward()
+            torch.nn.utils.clip_grad_norm_(G.parameters(), max_norm=1.0)
             opt_g.step()
 
         sched_g.step()
         sched_d.step()
 
+        losses_d.append(loss_d.item())
+        losses_g.append(loss_g.item())
+
         print(f"[Epoch {epoch}/{EPOCHS}] Loss_D: {loss_d.item():.4f}, Loss_G: {loss_g.item():.4f}, Real: {real_score:.4f}, Fake: {fake_score:.4f}")
         if epoch % SAVE_EVERY == 0:
-            torch.save(G.state_dict(), os.path.join(OUTPUT_DIR, f"G_epoch{epoch}.pth"))
+            torch.save(G.state_dict(), os.path.join(OUTPUT_DIR, f"Generator.pth"))
             save_checkpoint(G, epoch)
+
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(losses_d, label='Loss D', color='red')
+    plt.plot(losses_g, label='Loss G', color='green')
+    plt.title('Losses over epochs')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+    plt.savefig(os.path.join(SAMPLES_DIR, "losses.png"))
+    plt.show()
 
 if __name__ == "__main__":
     torch.cuda.empty_cache()

@@ -5,9 +5,9 @@ import random
 import librosa
 from tqdm import tqdm
 
-GENRE = "metal"
-INPUT_DIR = os.path.join("data", GENRE)
-OUTPUT_DIR = os.path.join("processed", GENRE)
+
+INPUT_DIR = "data"
+OUTPUT_DIR = "processed"
 SR = 22050
 CHUNK_DURATION = 6
 N_MELS = 128

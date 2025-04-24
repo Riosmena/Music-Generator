@@ -14,7 +14,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class MusicDataset(Dataset):
     def __init__(self, data_dir):
         self.base = data_dir
-        self.samples = glob(os.path.join(self.base, "metal", "*.pt"))
+        self.samples = glob(os.path.join(self.base, "*.pt"))
 
     def __len__(self):
         return len(self.samples)
@@ -22,7 +22,6 @@ class MusicDataset(Dataset):
     def __getitem__(self, idx):
         spec = torch.load(self.samples[idx], weights_only=True)
         spec = (spec - spec.min()) / (spec.max() - spec.min() + 1e-6)
-        spec = spec * 2 - 1
 
         if spec.ndim == 2:
             spec = spec.unsqueeze(0)
