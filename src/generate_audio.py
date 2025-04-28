@@ -11,7 +11,7 @@ N_MELS = 128
 N_FFT = 1024
 HOP_LENGTH = 512
 TIME_DIM = 128
-MODEL_PATH = "../logs/G_epoch200.pth"
+MODEL_PATH = "../models/Generator.pth"
 NUM_SEGMENTS = 8
 
 def load_model():
