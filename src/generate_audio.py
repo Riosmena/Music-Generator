@@ -37,7 +37,7 @@ def generate_audio():
     griffin = torchaudio.transforms.GriffinLim(
         n_fft=N_FFT,
         hop_length=HOP_LENGTH,
-        n_iter=100
+        n_iter=500
     )
 
     with torch.no_grad():
