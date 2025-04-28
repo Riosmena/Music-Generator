@@ -1,6 +1,6 @@
 # Music-Generator
 
-AI Model to generate a new music fragment of the genre Metal
+AI Model to generate a music fragment of the genre Metal.
 
 ## Author
 
@@ -14,5 +14,7 @@ AI Model to generate a new music fragment of the genre Metal
 
 - [Dataset](data) -> data
 - [Implementation](src) -> src
-- [Results](logs) -> logs
+- [Results](samples) -> samples
+- [Model](models) -> models
+- [Generated Audio](<generated_audio(1).wav>) -> generated_audio(1).wav
 - [Report](documents/M2-Report.pdf) -> documents/M2-Report.pdf
